@@ -1,0 +1,64 @@
+name: Guacamole demo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Start Guacamole and check login
+        env:
+          GUAC_ADMIN_PASSWORD: ${{ secrets.GUAC_ADMIN_PASSWORD }}
+        run: |
+          : "${GUAC_ADMIN_PASSWORD:?Add the GUAC_ADMIN_PASSWORD repository secret}"
+          export GUAC_DB_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::$GUAC_DB_PASSWORD"
+          echo "GUAC_DB_PASSWORD=$GUAC_DB_PASSWORD" >> "$GITHUB_ENV"
+
+          docker compose up -d --wait db
+          docker run --rm guacamole/guacamole:1.6.0 \
+            /opt/guacamole/bin/initdb.sh --postgresql |
+            docker compose exec -T db psql -U guacamole -d guacamole -v ON_ERROR_STOP=1
+
+          docker compose exec -T db psql -U guacamole -d guacamole \
+            -v ON_ERROR_STOP=1 -v admin_password="$GUAC_ADMIN_PASSWORD" <<'SQL'
+          UPDATE guacamole_user AS u
+          SET password_hash = sha256(convert_to(
+                :'admin_password' || upper(encode(u.password_salt, 'hex')), 'UTF8'
+              )),
+              password_date = CURRENT_TIMESTAMP
+          FROM guacamole_entity AS e
+          WHERE u.entity_id = e.entity_id AND e.name = 'guacadmin' AND e.type = 'USER';
+          SQL
+
+          docker compose up -d
+          curl --fail --silent --show-error --output /dev/null \
+            --retry 30 --retry-all-errors --retry-delay 2 --max-time 5 \
+            --data-urlencode "username=guacadmin" \
+            --data-urlencode "password=$GUAC_ADMIN_PASSWORD" \
+            http://127.0.0.1:8080/guacamole/api/tokens
+
+      - name: Open an email-protected tunnel for 10 minutes
+        env:
+          TUNNEL_EMAIL: ${{ secrets.TUNNEL_EMAIL }}
+        run: |
+          : "${TUNNEL_EMAIL:?Add the TUNNEL_EMAIL repository secret}"
+          curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/download/2026.11.2/cloudflared-linux-amd64 \
+            -o "$RUNNER_TEMP/cloudflared"
+          chmod +x "$RUNNER_TEMP/cloudflared"
+          timeout 10m "$RUNNER_TEMP/cloudflared" tunnel \
+            --url http://127.0.0.1:8080 --allowed-mail "$TUNNEL_EMAIL" \
+            || test "$?" -eq 124
+
+      - name: Stop containers
+        if: always() && env.GUAC_DB_PASSWORD != ''
+        run: docker compose down --volumes
