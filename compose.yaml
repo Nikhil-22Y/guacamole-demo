@@ -1,0 +1,26 @@
+services:
+  guacd:
+    image: guacamole/guacd:1.6.0
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: guacamole
+      POSTGRES_USER: guacamole
+      POSTGRES_PASSWORD: ${GUAC_DB_PASSWORD:?Set GUAC_DB_PASSWORD}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "guacamole", "-d", "guacamole"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  guacamole:
+    image: guacamole/guacamole:1.6.0
+    environment:
+      GUACD_HOSTNAME: guacd
+      POSTGRESQL_HOSTNAME: db
+      POSTGRESQL_DATABASE: guacamole
+      POSTGRESQL_USERNAME: guacamole
+      POSTGRESQL_PASSWORD: ${GUAC_DB_PASSWORD:?Set GUAC_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:8080:8080"
